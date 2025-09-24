@@ -1,65 +1,23 @@
 #include "pch.hpp"
 #include "https.hpp"
-
-#include <openssl/err.h>
-
-#ifdef _WIN32
-    #include <winsock2.h>
-    #include <ws2tcpip.h>
-#else
-    #include <unistd.h>
-    #include <arpa/inet.h>
-    #include <netinet/in.h>
-    #include <netinet/tcp.h> // @note TCP_DEFER_ACCEPT
-    #include <sys/socket.h>
-
-    #define SOCKET int
-#endif
+#include "httplib/httplib.h" // @note using httplib for https server
 
 void https::listener(_server_data server_data)
 {
-    OpenSSL_add_all_algorithms();
-    SSL_load_error_strings();
-    constexpr int enable = 1;
+    // @note create ssl server using httplib
+    httplib::SSLServer svr("resources/ctx/server.crt", "resources/ctx/server.key");
 
-    SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
-    if (ctx == nullptr)
-        ERR_print_errors_fp(stderr);
+    if (!svr.is_valid()) {
+        std::cerr << "failed to create ssl server" << std::endl;
+        return;
+    }
 
-    if (SSL_CTX_use_certificate_file(ctx, "resources/ctx/server.crt", SSL_FILETYPE_PEM) <= 0 ||
-        SSL_CTX_use_PrivateKey_file(ctx, "resources/ctx/server.key", SSL_FILETYPE_PEM) <= 0)
-            ERR_print_errors_fp(stderr);
+    // @note set server options for better performance and security
+    svr.set_address_family(AF_INET);
+    svr.set_tcp_nodelay(true);
 
-    SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_COMPRESSION | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1);
-
-    SSL_CTX_set_cipher_list(ctx, "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305");
-    SSL_CTX_set_ecdh_auto(ctx, 1);
-
-    SSL_CTX_set_mode(ctx, SSL_MODE_RELEASE_BUFFERS | SSL_MODE_AUTO_RETRY);
-
-    SOCKET socket = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-
-    setsockopt(socket, SOL_SOCKET, SO_REUSEADDR, (char*)&enable, sizeof(enable));
-#ifdef SO_REUSEPORT // @note unix
-    setsockopt(socket, SOL_SOCKET, SO_REUSEPORT, (char*)&enable, sizeof(enable));
-#endif
-#ifdef TCP_FASTOPEN
-    setsockopt(socket, IPPROTO_TCP, TCP_FASTOPEN, (char*)&enable, sizeof(enable));
-#endif
-#ifdef TCP_DEFER_ACCEPT // @note unix
-    setsockopt(socket, IPPROTO_TCP, TCP_DEFER_ACCEPT, &enable, sizeof(enable));
-#endif
-    struct sockaddr_in addr;
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(443);
-    socklen_t addrlen = sizeof(addr);
-    if (bind(socket, (struct sockaddr*)&addr, addrlen) < 0)
-        puts("could not bind port 443.");
-
-    printf("listening on %s:%d\n", server_data.server.c_str(), server_data.port);
-
-    const std::string Content =
+    // @note format server data response
+    const std::string content =
         std::format(
             "server|{}\n"
             "port|{}\n"
@@ -68,57 +26,31 @@ void https::listener(_server_data server_data)
             "#maint|{}\n"
             "loginurl|{}\n"
             "meta|{}\n"
-            "RTENDMARKERBS1001", 
+            "RTENDMARKERBS1001",
             server_data.server, server_data.port, server_data.type, server_data.type2, server_data.maint, server_data.loginurl, server_data.meta
         );
-    const std::string response =
-        std::format(
-            "HTTP/1.1 200 OK\r\n"
-            "Content-Type: text/plain\r\n"
-            "Content-Length: {}\r\n"
-            "Connection: close\r\n\r\n"
-            "{}",
-            Content.size(), Content);
 
-    listen(socket, SOMAXCONN); // @todo
-    while (true)
-    {
-        SOCKET fd = accept(socket, (struct sockaddr*)&addr, &addrlen);
-        if (fd < 0) continue;
+    // @note handler for growtopia server data endpoint
+    svr.Post("/growtopia/server_data.php", [&](const httplib::Request& req, httplib::Response& res) {
+        // @note set response headers
+        res.set_header("Content-Type", "text/plain");
+        res.set_header("Connection", "close");
 
-        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (char*)&enable, sizeof(enable));
+        // @note return server data
+        res.set_content(content, "text/plain");
+    });
 
-        SSL *ssl = SSL_new(ctx);
-        SSL_set_fd(ssl, fd);
-        
-        if (SSL_accept(ssl) > 0)
-        {
+    // @note handler for any other requests (optional)
+    svr.Get(".*", [&](const httplib::Request& req, httplib::Response& res) {
+        res.set_header("Content-Type", "text/plain");
+        res.set_content("server active", "text/plain");
+    });
 
-            char buf[213]; // @note size of growtopia's POST request.
-            const int length{ sizeof(buf) };
+    // @note start listening on port 443
+    printf("listening on %s:%d\n", server_data.server.c_str(), server_data.port);
 
-            if (SSL_read(ssl, buf, length) == length)
-            {
-                printf("%s", buf);
-                
-                if (std::string_view(buf, sizeof(buf )).contains("POST /growtopia/server_data.php HTTP/1.1"))
-                {
-                    SSL_write(ssl, response.c_str(), response.size());
-                    SSL_shutdown(ssl);
-                }
-            }
-            else ERR_print_errors_fp(stderr); // @note we don't accept growtopia GET. this error is normal if appears.
-        }
-        else ERR_print_errors_fp(stderr);
-        SSL_free(ssl);
-#ifdef _WIN32
-            closesocket(fd);
-#else
-            close(fd);
-#endif
+    if (!svr.listen("0.0.0.0", 443)) {
+        std::cerr << "failed to start server on port 443" << std::endl;
+        return;
     }
 }
-
-#ifndef _WIN32
-    #undef SOCKET
-#endif

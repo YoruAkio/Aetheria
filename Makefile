@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -std=c++2b -g -Iinclude -MMD -MP -MF $(BUILD_DIR)/$*.d
+CXXFLAGS = -std=c++2b -g -Iinclude -MMD -MP -MF $(BUILD_DIR)/$*.d -D_WIN32_WINNT=0x0A00 -DCPPHTTPLIB_OPENSSL_SUPPORT
 
 LIBS := -L./include/enet/lib
 
