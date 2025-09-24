@@ -21,8 +21,18 @@ log() {
     esac
 }
 
+# @note check current gcc version
+check_gcc_version() {
+    if command -v gcc >/dev/null 2>&1; then
+        local version=$(gcc --version | head -n1 | cut -d' ' -f3 | cut -d'.' -f1)
+        echo "$version"
+    else
+        echo "0"
+    fi
+}
+
 echo "======================================"
-echo "Aetheria Dependency Installer v0.1.0"
+echo "Aetheria Dependency Installer v0.1.2"
 echo "======================================"
 echo
 
@@ -58,21 +68,41 @@ if [ -f /etc/debian_version ]; then
     log "SUCCESS" "software-properties-common installed."
     echo
 
-    # @note add gcc repository and update
-    log "INFO" "Adding PPA for modern GCC (ppa:ubuntu-toolchain-r/test)..."
-    add-apt-repository ppa:ubuntu-toolchain-r/test -y
-    if [ $? -ne 0 ]; then
-        log "ERROR" "Failed to add PPA. Please check the output above for details."
-        exit 1
-    fi
-    log "SUCCESS" "PPA added successfully. Running apt-get update again..."
-    apt-get update -y
-    log "SUCCESS" "Update finished."
-    echo
+    # @note check current gcc version
+    current_gcc_version=$(check_gcc_version)
+    log "INFO" "Current GCC version: $current_gcc_version"
 
-    # @note install all required dependencies
-    log "INFO" "Installing dependencies: build-essential libssl-dev openssl sqlite3 libsqlite3-dev g++-13..."
-    apt-get install -y build-essential libssl-dev openssl sqlite3 libsqlite3-dev g++-13
+    if [ "$current_gcc_version" -ge 13 ]; then
+        log "SUCCESS" "GCC version $current_gcc_version is already installed (>= 13). Skipping GCC installation."
+    else
+        log "INFO" "GCC version $current_gcc_version is too old. Installing GCC 13..."
+
+        # @note add gcc repository and update
+        log "INFO" "Adding PPA for modern GCC (ppa:ubuntu-toolchain-r/test)..."
+        add-apt-repository ppa:ubuntu-toolchain-r/test -y
+        if [ $? -ne 0 ]; then
+            log "ERROR" "Failed to add PPA. Please check the output above for details."
+            exit 1
+        fi
+        log "SUCCESS" "PPA added successfully. Running apt-get update again..."
+        apt-get update -y
+        log "SUCCESS" "Update finished."
+        echo
+
+        # @note install gcc 13
+        log "INFO" "Installing g++-13..."
+        apt-get install -y g++-13
+        if [ $? -ne 0 ]; then
+            log "ERROR" "Failed to install g++-13. Please check the output above for error details."
+            exit 1
+        fi
+        log "SUCCESS" "g++-13 installed successfully."
+        echo
+    fi
+
+    # @note install remaining dependencies
+    log "INFO" "Installing remaining dependencies: build-essential libssl-dev openssl sqlite3 libsqlite3-dev..."
+    apt-get install -y build-essential libssl-dev openssl sqlite3 libsqlite3-dev
     if [ $? -ne 0 ]; then
         log "ERROR" "Failed to install dependencies. Please check the output above for error details."
         exit 1
@@ -122,6 +152,26 @@ elif [ -f /etc/arch-release ]; then
     fi
     log "SUCCESS" "base-devel installed."
     echo
+
+    # @note check current gcc version for arch
+    current_gcc_version=$(check_gcc_version)
+    log "INFO" "Current GCC version: $current_gcc_version"
+
+    if [ "$current_gcc_version" -ge 13 ]; then
+        log "SUCCESS" "GCC version $current_gcc_version is already installed (>= 13). Skipping GCC installation."
+    else
+        log "INFO" "GCC version $current_gcc_version is too old. Installing modern GCC..."
+
+        # @note install gcc 13 for arch
+        log "INFO" "Installing gcc..."
+        pacman -S --noconfirm --needed gcc
+        if [ $? -ne 0 ]; then
+            log "ERROR" "Failed to install gcc. Please check the output above for error details."
+            exit 1
+        fi
+        log "SUCCESS" "gcc installed successfully."
+        echo
+    fi
 
     # @note install required dependencies
     log "INFO" "Installing additional dependencies: openssl sqlite..."
